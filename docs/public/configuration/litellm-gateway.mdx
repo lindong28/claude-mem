@@ -173,6 +173,8 @@ This avoids two common failure modes:
 
 If `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` is present in `~/.claude-mem/.env`, the worker treats that as explicit gateway/API configuration and skips Claude OAuth lookup. This prevents a configured gateway from falling back to `api.anthropic.com`.
 
+If the Claude SDK network proxy is enabled and the effective `ANTHROPIC_BASE_URL` host is `localhost` or `127.0.0.1`, claude-mem adds only that host to `NO_PROXY` so the local LiteLLM gateway is reached directly. IPv6 loopback is not covered: use `localhost` or `127.0.0.1` instead of `[::1]` when the SDK proxy is enabled.
+
 ## Model Names
 
 `CLAUDE_MEM_MODEL` is passed through to the Claude Agent SDK. In gateway mode, claude-mem allows any non-empty model string because the valid model list is owned by LiteLLM.

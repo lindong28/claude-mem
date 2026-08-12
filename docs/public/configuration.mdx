@@ -75,6 +75,8 @@ Claude-Mem strips inherited proxy environment variables from child processes by 
 
 These two values are read only from `settings.json`; same-named parent environment variables and ordinary inherited proxy variables cannot override them. Enabling the proxy without a non-empty URL stops the SDK launch with an error. Local Chroma MCP, the worker MCP self-check, and the worker daemon keep their default proxy-stripping behavior.
 
+When the effective `ANTHROPIC_BASE_URL` host is exactly `localhost` or `127.0.0.1`, claude-mem also injects that single host as `NO_PROXY` so the SDK reaches a local gateway directly. An unset or non-loopback base URL does not receive `NO_PROXY`. IPv6 loopback is not covered: an `[::1]` base URL leaves `NO_PROXY` unset and writes a warning to the worker log.
+
 ### System Configuration
 
 | Setting                       | Default                         | Description                           |

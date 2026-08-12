@@ -386,13 +386,45 @@ function loadClaudeSdkProxyEnvFromFile(settingsPath: string): Record<string, str
   return validateClaudeSdkProxySettings(flatSettings);
 }
 
+function deriveClaudeSdkProxyEnv(
+  proxyEnv: Record<string, string> | undefined,
+  anthropicBaseUrl: string | undefined,
+): Record<string, string> | undefined {
+  if (!proxyEnv || !anthropicBaseUrl) return proxyEnv;
+
+  let hostname: string;
+  try {
+    hostname = new URL(anthropicBaseUrl).hostname.toLowerCase();
+  } catch {
+    return proxyEnv;
+  }
+
+  if (hostname === '[::1]' || hostname === '::1') {
+    logger.warn(
+      'ENV',
+      'Claude SDK proxy bypass does not cover an IPv6 loopback ANTHROPIC_BASE_URL',
+      { hostname },
+    );
+    return proxyEnv;
+  }
+
+  const isSupportedLoopback = hostname === 'localhost' || hostname === '127.0.0.1';
+  if (!isSupportedLoopback) return proxyEnv;
+
+  return {
+    ...proxyEnv,
+    NO_PROXY: hostname,
+  };
+}
+
 export async function buildClaudeSdkEnv(
   options: BuildClaudeSdkEnvOptions = {},
 ): Promise<ClaudeSdkEnvironment> {
   const settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
   const includeCredentials = options.includeCredentials ?? true;
-  const proxyEnv = loadClaudeSdkProxyEnvFromFile(settingsPath);
+  const configuredProxyEnv = loadClaudeSdkProxyEnvFromFile(settingsPath);
   const baseEnv = await buildIsolatedEnvWithFreshOAuth(includeCredentials);
+  const proxyEnv = deriveClaudeSdkProxyEnv(configuredProxyEnv, baseEnv.ANTHROPIC_BASE_URL);
   const env = sanitizeEnv(baseEnv, { injectProxy: proxyEnv });
 
   return proxyEnv ? { env, proxyEnv } : { env };
