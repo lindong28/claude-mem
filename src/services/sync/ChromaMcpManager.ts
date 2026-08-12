@@ -1390,6 +1390,20 @@ export class ChromaMcpManager {
   private getSpawnEnv(preflightEnv?: Record<string, string>): Record<string, string> {
     const baseEnv = preflightEnv ? { ...preflightEnv } : ChromaMcpManager.getUvxPreflightEnv();
 
+    // Record who spawned this child. If we are killed in a way that skips our
+    // exit handlers (SIGKILL, crash, OOM), the child is reparented to init and
+    // becomes invisible to every later worker: the supervisor registry's key is
+    // fixed, so the next worker overwrites the entry rather than inheriting it,
+    // and nothing here enumerates system processes — collectDescendantPids
+    // walks *down* from a known pid, which an orphan by definition no longer
+    // has. Ownership therefore has to be stamped at spawn time; a ppid of 1
+    // later tells you the parent is gone, not who it was.
+    //
+    // Env rather than argv: the child's argv is `uvx … chroma-mcp==<v> …` and
+    // chroma-mcp rejects flags it does not recognise. Set before the cert
+    // branch so both return paths carry it.
+    baseEnv.CLAUDE_MEM_CHROMA_OWNER_PID = String(process.pid);
+
     const combinedCertPath = this.getCombinedCertPath();
     if (!combinedCertPath) {
       return baseEnv;
