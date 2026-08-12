@@ -11,6 +11,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_PROVIDER: string;  
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
+  CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED: string;
+  CLAUDE_MEM_CLAUDE_SDK_PROXY_URL: string;
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  
@@ -67,6 +69,11 @@ export interface SettingsDefaults {
 }
 
 export class SettingsDefaultsManager {
+  private static readonly FILE_ONLY_KEYS = new Set<keyof SettingsDefaults>([
+    'CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED',
+    'CLAUDE_MEM_CLAUDE_SDK_PROXY_URL',
+  ]);
+
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
@@ -75,6 +82,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
+    CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED: 'false',
+    CLAUDE_MEM_CLAUDE_SDK_PROXY_URL: '',
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
@@ -135,6 +144,7 @@ export class SettingsDefaultsManager {
   }
 
   static get(key: keyof SettingsDefaults): string {
+    if (this.FILE_ONLY_KEYS.has(key)) return this.DEFAULTS[key];
     return process.env[key] ?? this.DEFAULTS[key];
   }
 
@@ -151,7 +161,7 @@ export class SettingsDefaultsManager {
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
     const result = { ...settings };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (process.env[key] !== undefined) {
+      if (!this.FILE_ONLY_KEYS.has(key) && process.env[key] !== undefined) {
         result[key] = process.env[key]!;
       }
     }

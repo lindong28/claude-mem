@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
-import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
+import { buildClaudeSdkEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -16,7 +16,6 @@ import {
   ensureSdkProcessExit,
   waitForSlot,
 } from '../../supervisor/process-registry.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import {
   globalRateLimitStore,
   shouldAbortForQuota,
@@ -152,7 +151,7 @@ export class ClaudeProvider {
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     await waitForSlot(maxConcurrent, session.abortController.signal);
 
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const { env: isolatedEnv, proxyEnv } = await buildClaudeSdkEnv();
     const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
@@ -186,7 +185,7 @@ export class ClaudeProvider {
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
+        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, proxyEnv),
         env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
         mcpServers: {},
         settingSources: [],

@@ -35,7 +35,14 @@ export const ENV_PRESERVE = new Set([
   'GOOGLE_APPLICATION_CREDENTIALS',
 ]);
 
-export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export interface SanitizeEnvOptions {
+  injectProxy?: Readonly<Record<string, string>>;
+}
+
+export function sanitizeEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: SanitizeEnvOptions = {},
+): NodeJS.ProcessEnv {
   const sanitized: NodeJS.ProcessEnv = {};
 
   for (const [key, value] of Object.entries(env)) {
@@ -45,6 +52,12 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
     if (ENV_PROXY_VARS.has(key)) continue;
     if (ENV_PREFIXES.some(prefix => key.startsWith(prefix))) continue;
     sanitized[key] = value;
+  }
+
+  if (options.injectProxy) {
+    for (const [key, value] of Object.entries(options.injectProxy)) {
+      sanitized[key] = value;
+    }
   }
 
   return sanitized;

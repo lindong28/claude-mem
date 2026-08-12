@@ -5,9 +5,8 @@ import type { CorpusFile, QueryResult } from './types.js';
 import { logger } from '../../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../../shared/paths.js';
-import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
+import { buildClaudeSdkEnv } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
-import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -51,7 +50,7 @@ export class KnowledgeAgent {
 
     ensureDir(OBSERVER_SESSIONS_DIR);
     const claudePath = findClaudeExecutable('WORKER');
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const { env: isolatedEnv } = await buildClaudeSdkEnv();
 
     const queryResult = query({
       prompt: primePrompt,
@@ -146,7 +145,7 @@ export class KnowledgeAgent {
   private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
     ensureDir(OBSERVER_SESSIONS_DIR);
     const claudePath = findClaudeExecutable('WORKER');
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const { env: isolatedEnv } = await buildClaudeSdkEnv();
 
     const queryResult = query({
       prompt: question,

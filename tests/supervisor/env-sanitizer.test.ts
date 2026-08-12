@@ -158,6 +158,33 @@ describe('sanitizeEnv', () => {
     expect(result.PATH).toBe('/usr/bin');
   });
 
+  it('injects only the exact proxy values supplied after sanitization', () => {
+    const result = sanitizeEnv({
+      HTTP_PROXY: 'http://parent-proxy:8080',
+      HTTPS_PROXY: 'http://parent-proxy:8080',
+      PATH: '/usr/bin'
+    }, {
+      injectProxy: {
+        HTTP_PROXY: 'http://tracked-proxy:59625',
+        HTTPS_PROXY: 'http://tracked-proxy:59625'
+      }
+    });
+
+    expect(result.HTTP_PROXY).toBe('http://tracked-proxy:59625');
+    expect(result.HTTPS_PROXY).toBe('http://tracked-proxy:59625');
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
+  it('still strips proxies when no injection is supplied', () => {
+    const result = sanitizeEnv({
+      HTTP_PROXY: 'http://parent-proxy:8080',
+      HTTPS_PROXY: 'http://parent-proxy:8080'
+    });
+
+    expect(result.HTTP_PROXY).toBeUndefined();
+    expect(result.HTTPS_PROXY).toBeUndefined();
+  });
+
   it('selectively preserves only allowed CLAUDE_CODE_* vars while stripping others', () => {
     const result = sanitizeEnv({
       CLAUDE_CODE_OAUTH_TOKEN: 'my-oauth-token',

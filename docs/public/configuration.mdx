@@ -57,6 +57,24 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
 
+### Claude SDK Network Proxy
+
+Claude-Mem strips inherited proxy environment variables from child processes by default. To opt only the Claude Agent SDK subprocesses into an HTTP proxy, set both values in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED": "true",
+  "CLAUDE_MEM_CLAUDE_SDK_PROXY_URL": "http://127.0.0.1:59625"
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED` | `false` | Inject the configured proxy into Claude Agent SDK subprocesses only |
+| `CLAUDE_MEM_CLAUDE_SDK_PROXY_URL` | — | Exact `http://` or `https://` URL injected as both `HTTP_PROXY` and `HTTPS_PROXY` |
+
+These two values are read only from `settings.json`; same-named parent environment variables and ordinary inherited proxy variables cannot override them. Enabling the proxy without a non-empty URL stops the SDK launch with an error. Local Chroma MCP, the worker MCP self-check, and the worker daemon keep their default proxy-stripping behavior.
+
 ### System Configuration
 
 | Setting                       | Default                         | Description                           |

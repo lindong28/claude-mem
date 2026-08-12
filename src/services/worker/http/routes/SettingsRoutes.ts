@@ -13,6 +13,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { validateClaudeSdkProxySettings } from '../../../../shared/EnvManager.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
@@ -28,7 +29,8 @@ const updateBranchSchema = z.object({}).passthrough();
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
-    private settingsManager: SettingsManager
+    private settingsManager: SettingsManager,
+    private settingsPathResolver: () => string = paths.settings,
   ) {
     super();
   }
@@ -46,7 +48,7 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
-    const settingsPath = paths.settings();
+    const settingsPath = this.settingsPathResolver();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
@@ -62,7 +64,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const settingsPath = paths.settings();
+    try {
+      validateClaudeSdkProxySettings(req.body, {
+        validateConfiguredUrl: true,
+        allowMissingUrlWhenEnabled: true,
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    const settingsPath = this.settingsPathResolver();
     this.ensureSettingsFile(settingsPath);
     let settings: any = {};
 
@@ -70,6 +85,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
         settings = JSON.parse(settingsData);
+        if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
+          settings = { ...settings.env };
+        }
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
@@ -88,6 +106,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
       'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+      'CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED',
+      'CLAUDE_MEM_CLAUDE_SDK_PROXY_URL',
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
@@ -121,6 +141,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (req.body[key] !== undefined) {
         settings[key] = req.body[key];
       }
+    }
+
+    try {
+      validateClaudeSdkProxySettings(settings);
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
     }
 
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');

@@ -529,14 +529,22 @@ export interface SpawnSdkOptions {
   signal?: AbortSignal;
 }
 
+export function buildSdkSpawnEnv(
+  env: NodeJS.ProcessEnv,
+  proxyEnv?: Readonly<Record<string, string>>,
+): NodeJS.ProcessEnv {
+  return sanitizeEnv(env, { injectProxy: proxyEnv });
+}
+
 export function spawnSdkProcess(
   sessionDbId: number,
-  options: SpawnSdkOptions
+  options: SpawnSdkOptions,
+  proxyEnv?: Readonly<Record<string, string>>,
 ): { process: SpawnedSdkProcess; pid: number; pgid: number } | null {
   const registry = getProcessRegistry();
 
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
-  const env = sanitizeEnv(options.env ?? process.env);
+  const env = buildSdkSpawnEnv(options.env ?? process.env, proxyEnv);
 
   const filteredArgs: string[] = [];
   for (const arg of options.args) {
@@ -634,7 +642,10 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+export function createSdkSpawnFactory(
+  sessionDbId: number,
+  proxyEnv?: Readonly<Record<string, string>>,
+) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -669,7 +680,7 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    const result = spawnSdkProcess(sessionDbId, spawnOptions, proxyEnv);
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

@@ -1,7 +1,8 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { paths } from './paths.js';
+import { paths, USER_SETTINGS_PATH } from './paths.js';
+import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
@@ -29,6 +30,24 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+}
+
+export const CLAUDE_SDK_PROXY_ENABLED_KEY = 'CLAUDE_MEM_CLAUDE_SDK_PROXY_ENABLED';
+export const CLAUDE_SDK_PROXY_URL_KEY = 'CLAUDE_MEM_CLAUDE_SDK_PROXY_URL';
+
+export interface ClaudeSdkEnvironment {
+  env: NodeJS.ProcessEnv;
+  proxyEnv?: Record<string, string>;
+}
+
+export interface BuildClaudeSdkEnvOptions {
+  settingsPath?: string;
+  includeCredentials?: boolean;
+}
+
+export interface ValidateClaudeSdkProxySettingsOptions {
+  validateConfiguredUrl?: boolean;
+  allowMissingUrlWhenEnabled?: boolean;
 }
 
 function parseEnvFile(content: string): Record<string, string> {
@@ -285,6 +304,98 @@ export async function buildIsolatedEnvWithFreshOAuth(
   }
 
   return isolatedEnv;
+}
+
+function validateClaudeSdkProxyUrl(proxyUrl: unknown): string {
+  if (typeof proxyUrl !== 'string' || proxyUrl.trim().length === 0) {
+    throw new Error(
+      `${CLAUDE_SDK_PROXY_ENABLED_KEY} is enabled but ${CLAUDE_SDK_PROXY_URL_KEY} is missing`,
+    );
+  }
+
+  if (proxyUrl !== proxyUrl.trim()) {
+    throw new Error(`${CLAUDE_SDK_PROXY_URL_KEY} must not contain leading or trailing whitespace`);
+  }
+
+  let parsedProxyUrl: URL;
+  try {
+    parsedProxyUrl = new URL(proxyUrl);
+  } catch {
+    throw new Error(`${CLAUDE_SDK_PROXY_URL_KEY} must be a valid HTTP or HTTPS proxy URL`);
+  }
+
+  if (!['http:', 'https:'].includes(parsedProxyUrl.protocol) || !parsedProxyUrl.hostname) {
+    throw new Error(`${CLAUDE_SDK_PROXY_URL_KEY} must be a valid HTTP or HTTPS proxy URL`);
+  }
+
+  return proxyUrl;
+}
+
+export function validateClaudeSdkProxySettings(
+  settings: Readonly<Record<string, unknown>>,
+  options: ValidateClaudeSdkProxySettingsOptions = {},
+): Record<string, string> | undefined {
+  const enabledValue = settings[CLAUDE_SDK_PROXY_ENABLED_KEY];
+  const enabled = enabledValue === true || enabledValue === 'true';
+  const disabled = enabledValue === undefined || enabledValue === false || enabledValue === 'false';
+
+  if (!enabled && !disabled) {
+    throw new Error(`${CLAUDE_SDK_PROXY_ENABLED_KEY} must be "true" or "false"`);
+  }
+
+  const configuredProxyUrl = settings[CLAUDE_SDK_PROXY_URL_KEY];
+  if (!enabled) {
+    if (options.validateConfiguredUrl && configuredProxyUrl !== undefined && configuredProxyUrl !== '') {
+      validateClaudeSdkProxyUrl(configuredProxyUrl);
+    }
+    return undefined;
+  }
+
+  if (
+    options.allowMissingUrlWhenEnabled &&
+    (configuredProxyUrl === undefined || configuredProxyUrl === '')
+  ) {
+    return undefined;
+  }
+
+  const proxyUrl = validateClaudeSdkProxyUrl(configuredProxyUrl);
+
+  return {
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+  };
+}
+
+function loadClaudeSdkProxyEnvFromFile(settingsPath: string): Record<string, string> | undefined {
+  if (!existsSync(settingsPath)) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+
+  const settings = parsed as Record<string, unknown>;
+  const flatSettings = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)
+    ? settings.env as Record<string, unknown>
+    : settings;
+
+  return validateClaudeSdkProxySettings(flatSettings);
+}
+
+export async function buildClaudeSdkEnv(
+  options: BuildClaudeSdkEnvOptions = {},
+): Promise<ClaudeSdkEnvironment> {
+  const settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
+  const includeCredentials = options.includeCredentials ?? true;
+  const proxyEnv = loadClaudeSdkProxyEnvFromFile(settingsPath);
+  const baseEnv = await buildIsolatedEnvWithFreshOAuth(includeCredentials);
+  const env = sanitizeEnv(baseEnv, { injectProxy: proxyEnv });
+
+  return proxyEnv ? { env, proxyEnv } : { env };
 }
 
 export function getCredential(key: keyof ClaudeMemEnv): string | undefined {
