@@ -38,6 +38,7 @@ describe('GeminiProvider', () => {
   let mockMarkProcessed: any;
   let mockCleanupProcessed: any;
   let mockResetStuckMessages: any;
+  let mockFailClaimedBatch: any;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
 
@@ -73,6 +74,7 @@ describe('GeminiProvider', () => {
     mockMarkProcessed = mock(() => {});
     mockCleanupProcessed = mock(() => 0);
     mockResetStuckMessages = mock(() => 0);
+    mockFailClaimedBatch = mock(() => 0);
 
     mockStoreObservations = mock(() => ({
       observationIds: [1],
@@ -108,7 +110,10 @@ describe('GeminiProvider', () => {
 
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
-      getPendingMessageStore: () => mockPendingMessageStore
+      getPendingMessageStore: () => mockPendingMessageStore,
+      getClaimedMessageIds: mock(() => []),
+      releaseClaimedMessageIds: mock(() => {}),
+      failClaimedBatch: mockFailClaimedBatch,
     } as unknown as SessionManager;
 
     agent = new GeminiProvider(mockDbManager, mockSessionManager);
@@ -280,6 +285,33 @@ describe('GeminiProvider', () => {
     // forwarding the raw upstream body. The original cause is preserved on
     // `.cause` for diagnostics — see classifyGeminiError in GeminiProvider.ts.
     await expect(agent.startSession(session)).rejects.toThrow('Gemini bad request (status 400)');
+  });
+
+  it('should dispatch raw HTTP 403 with quota text as NEW_403', async () => {
+    const session = {
+      sessionDbId: 1,
+      contentSessionId: 'test-session',
+      memorySessionId: 'mem-session-123',
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      pendingMessages: [],
+      abortController: new AbortController(),
+      generatorPromise: null,
+      currentProvider: null,
+      startTime: Date.now(),
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(
+      'RESOURCE_EXHAUSTED: quota exceeded',
+      { status: 403 },
+    )));
+
+    await expect(agent.startSession(session)).rejects.toThrow('status 403');
+    expect(mockFailClaimedBatch).toHaveBeenCalledWith(1, 'NEW_403');
   });
 
   it('should respect rate limits when rate limiting enabled', async () => {

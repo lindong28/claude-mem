@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   ClassifiedProviderError,
   isClassified,
+  providerFailureCode,
   type ProviderErrorClass,
 } from '../../src/services/worker/provider-errors.js';
 
@@ -114,5 +115,22 @@ describe('ClassifiedProviderError', () => {
     expect(isClassified(null)).toBe(false);
     expect(isClassified(undefined)).toBe(false);
     expect(isClassified({ kind: 'rate_limit' })).toBe(false);
+  });
+});
+
+describe('providerFailureCode 403 detection', () => {
+  it('maps common raw 403 messages to NEW_403', () => {
+    expect(providerFailureCode(new Error('Request failed with status code 403'))).toBe('NEW_403');
+    expect(providerFailureCode(new Error('HTTP 403 Forbidden'))).toBe('NEW_403');
+  });
+
+  it('prefers a structured non-403 status over conflicting message text', () => {
+    const error = Object.assign(new Error('HTTP 403 Forbidden'), { status: 429 });
+    const classified = new ClassifiedProviderError('rate limited', {
+      kind: 'rate_limit',
+      cause: error,
+      status: 429,
+    });
+    expect(providerFailureCode(classified)).toBe('PROVIDER_RATE_LIMIT');
   });
 });

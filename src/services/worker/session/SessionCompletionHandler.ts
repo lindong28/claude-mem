@@ -19,26 +19,15 @@ export class SessionCompletionHandler {
       logger.debug('SESSION', 'finalizeSession: session not found, skipping', { sessionId: sessionDbId });
       return;
     }
+
+    this.sessionManager.failClaimedBatch(sessionDbId, 'FINALIZE');
+
     if (row.status === 'completed') {
       logger.debug('SESSION', 'finalizeSession: already completed, skipping', { sessionId: sessionDbId });
       return;
     }
 
     sessionStore.markSessionCompleted(sessionDbId);
-
-    try {
-      const pendingStore = this.sessionManager.getPendingMessageStore();
-      const cleared = pendingStore.clearPendingForSession(sessionDbId);
-      if (cleared > 0) {
-        logger.warn('SESSION', `Cleared ${cleared} orphaned pending messages on session finalize`, {
-          sessionId: sessionDbId, cleared
-        });
-      }
-    } catch (e) {
-      logger.debug('SESSION', 'Failed to clear pending queue on session finalize', {
-        sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e)
-      });
-    }
 
     this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
 

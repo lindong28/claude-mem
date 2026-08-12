@@ -13,6 +13,8 @@ export interface GeneratorExitDependencies {
 
 function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
   return reason === 'shutdown' ||
+    reason === 'provider-failure' ||
+    reason === 'external-sigterm' ||
     reason === 'restart-guard' ||
     reason === 'overflow' ||
     reason === 'quota' ||
@@ -22,15 +24,15 @@ function isHardStopReason(reason: ActiveSession['abortReason']): boolean {
 /**
  * Post-generator-exit handler. Under the new model:
  *   - 'processing' rows reset to 'pending' on next generator start (handled by SessionManager.getMessageIterator).
- *   - Per-message retry/drain logic is gone; messages live in the queue until clearPendingForSession lands.
+ *   - Claimed rows are preserved with a stable failure code; unclaimed siblings remain untouched.
  *
  * Behavior:
  *   1. Always: ensure SDK subprocess is dead.
- *   2. Hard-stop reasons (shutdown / restart-guard / overflow / quota): clear pending rows for the session and finalize.
+ *   2. Hard-stop reasons (shutdown / restart-guard / overflow / quota): failure-code the claimed batch and finalize.
  *   3. Otherwise (idle / natural completion):
  *        - If 0 pending → finalize.
  *        - If pending > 0 and restart guard allows → respawn with backoff.
- *        - If guard tripped → clear pending and finalize.
+ *        - If guard tripped → failure-code the claimed batch and finalize.
  */
 export async function handleGeneratorExit(
   session: ActiveSession,
@@ -50,14 +52,14 @@ export async function handleGeneratorExit(
 
   const pendingStore = sessionManager.getPendingMessageStore();
 
-  const terminateSession = (logPrefix: string, clearPending: boolean) => {
+  const terminateSession = (logPrefix: string, failureCode?: string) => {
     try {
-      if (clearPending) {
+      if (failureCode) {
         try {
-          pendingStore.clearPendingForSession(sessionDbId);
+          sessionManager.failClaimedBatch(sessionDbId, failureCode);
         } catch (e) {
           const normalized = e instanceof Error ? e : new Error(String(e));
-          logger.error('SESSION', `${logPrefix} pending cleanup failed; continuing finalization`, {
+          logger.error('SESSION', `${logPrefix} pending preservation failed; continuing finalization`, {
             sessionId: sessionDbId,
             reason
           }, normalized);
@@ -78,11 +80,13 @@ export async function handleGeneratorExit(
   };
 
   if (isHardStopReason(reason)) {
-    logger.info('SESSION', `Generator exited with hard-stop reason — clearing pending and finalizing`, {
+    logger.info('SESSION', `Generator exited with hard-stop reason — preserving claimed batch and finalizing`, {
       sessionId: sessionDbId,
       reason
     });
-    terminateSession('Hard-stop', true);
+    const normalizedReason = typeof reason === 'string' && reason.startsWith('quota:') ? 'quota' : reason;
+    const failureCode = `HARD_STOP_${String(normalizedReason ?? 'UNKNOWN').replace(/-/g, '_').toUpperCase()}`;
+    terminateSession('Hard-stop', failureCode);
     return;
   }
 
@@ -94,14 +98,14 @@ export async function handleGeneratorExit(
     logger.error('SESSION', 'Error during recovery pending-count check; aborting to prevent leaks', {
       sessionId: sessionDbId
     }, normalized);
-    terminateSession('Recovery abort', true);
+    terminateSession('Recovery abort', 'PENDING_COUNT_FAILED');
     return;
   }
 
   if (pendingCount === 0) {
     session.restartGuard?.recordSuccess();
     session.consecutiveRestarts = 0;
-    terminateSession('Natural completion', false);
+    terminateSession('Natural completion');
     return;
   }
 
@@ -110,7 +114,7 @@ export async function handleGeneratorExit(
   session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
 
   if (!restartAllowed) {
-    logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, clearing pending and terminating`, {
+    logger.error('SESSION', `CRITICAL: Restart guard tripped — session is dead, preserving claimed batch and terminating`, {
       sessionId: sessionDbId,
       pendingCount,
       restartsInWindow: session.restartGuard.restartsInWindow,
@@ -120,7 +124,7 @@ export async function handleGeneratorExit(
       maxConsecutiveFailures: session.restartGuard.maxConsecutiveFailures,
     });
     session.consecutiveRestarts = 0;
-    terminateSession('Restart guard', true);
+    terminateSession('Restart guard', 'RESTART_GUARD');
     return;
   }
 

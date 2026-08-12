@@ -33,6 +33,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
+  claimedPendingMessageIds: number[];
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
 }

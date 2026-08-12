@@ -19,7 +19,7 @@ export function storeObservationsAndMarkComplete(
   project: string,
   observations: ObservationInput[],
   summary: SummaryInput | null,
-  messageId: number,
+  messageIds: readonly number[],
   promptNumber?: number,
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
@@ -104,14 +104,24 @@ export function storeObservationsAndMarkComplete(
       summaryId = Number(result.lastInsertRowid);
     }
 
+    const uniqueMessageIds = [...new Set(messageIds)];
+    if (uniqueMessageIds.length === 0) {
+      throw new Error('storeObservationsAndMarkComplete: no covered pending messages');
+    }
+
     // Current queue rows are live work only; completed work is removed, not retained as processed.
+    const placeholders = uniqueMessageIds.map(() => '?').join(', ');
     const deleteStmt = db.prepare(`
       DELETE FROM pending_messages
-      WHERE id = ? AND status = 'processing'
+      WHERE id IN (${placeholders})
+        AND status = 'processing'
+        AND last_failure_code IS NULL
     `);
-    const deleteResult = deleteStmt.run(messageId);
-    if (deleteResult.changes !== 1) {
-      throw new Error(`storeObservationsAndMarkComplete: failed to complete pending message ${messageId}`);
+    const deleteResult = deleteStmt.run(...uniqueMessageIds);
+    if (deleteResult.changes !== uniqueMessageIds.length) {
+      throw new Error(
+        `storeObservationsAndMarkComplete: expected ${uniqueMessageIds.length} covered rows, deleted ${deleteResult.changes}`
+      );
     }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

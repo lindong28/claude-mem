@@ -84,7 +84,9 @@ describe('ResponseProcessor', () => {
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
-      clearPendingForSession: mock(() => {}),
+      getClaimedMessageIds: mock(() => []),
+      releaseClaimedMessageIds: mock(() => {}),
+      failClaimedBatch: mock(() => 0),
     } as unknown as SessionManager;
 
     mockBroadcast = mock(() => {});
@@ -122,7 +124,7 @@ describe('ResponseProcessor', () => {
       earliestPendingTimestamp: Date.now() - 10000,
       conversationHistory: [],
       currentProvider: 'claude',
-      processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
+      claimedPendingMessageIds: [],
       ...overrides,
     } as ActiveSession;
   }
@@ -206,12 +208,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('non-XML observer responses', () => {
-    it('warns and clears pending work when the observer returns non-XML prose', async () => {
-      const clearPendingForSession = mock(() => {});
+    it('warns and failure-codes pending work when the observer returns non-XML prose', async () => {
+      const failClaimedBatch = mock(() => 0);
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        clearPendingForSession,
+        getClaimedMessageIds: mock(() => []),
+        releaseClaimedMessageIds: mock(() => {}),
+        failClaimedBatch,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -233,7 +237,7 @@ describe('ResponseProcessor', () => {
         expect.stringMatching(/^TestAgent returned non-XML\/empty response/),
         expect.objectContaining({ sessionId: 1 })
       );
-      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(failClaimedBatch).toHaveBeenCalledWith(1, 'INVALID_RESPONSE', []);
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
@@ -457,12 +461,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
-    it('clears pending work and does NOT call storeObservations on empty response', async () => {
-      const clearPendingForSession = mock(() => {});
+    it('failure-codes pending work and does NOT call storeObservations on empty response', async () => {
+      const failClaimedBatch = mock(() => 0);
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        clearPendingForSession,
+        getClaimedMessageIds: mock(() => []),
+        releaseClaimedMessageIds: mock(() => {}),
+        failClaimedBatch,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -474,16 +480,18 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(failClaimedBatch).toHaveBeenCalledWith(1, 'INVALID_RESPONSE', []);
       expect(session.earliestPendingTimestamp).toBeNull();
     });
 
-    it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
-      const clearPendingForSession = mock(() => {});
+    it('failure-codes pending work and does NOT call storeObservations on plain-text response', async () => {
+      const failClaimedBatch = mock(() => 0);
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
-        clearPendingForSession,
+        getClaimedMessageIds: mock(() => []),
+        releaseClaimedMessageIds: mock(() => {}),
+        failClaimedBatch,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -495,7 +503,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(clearPendingForSession).toHaveBeenCalledWith(1);
+      expect(failClaimedBatch).toHaveBeenCalledWith(1, 'INVALID_RESPONSE', []);
       expect(session.earliestPendingTimestamp).toBeNull();
     });
   });
@@ -625,7 +633,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('error handling', () => {
-    it('should throw error if memorySessionId is missing from session', async () => {
+    it('should failure-code the claimed batch if memorySessionId is missing from session', async () => {
       const session = createMockSession({
         memorySessionId: null, // Missing memory session ID
       });
@@ -635,18 +643,17 @@ describe('ResponseProcessor', () => {
         <narrative>some narrative</narrative>
       </observation>`;
 
-      await expect(
-        processAgentResponse(
-          responseText,
-          session,
-          mockDbManager,
-          mockSessionManager,
-          mockWorker,
-          100,
-          null,
-          'TestAgent'
-        )
-      ).rejects.toThrow('Cannot store observations: memorySessionId not yet captured');
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+      expect(mockSessionManager.failClaimedBatch).toHaveBeenCalledWith(1, 'MISSING_MEMORY_SESSION', []);
     });
   });
 

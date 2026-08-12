@@ -36,6 +36,11 @@ import { ClassifiedProviderError } from './provider-errors.js';
 export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   const message = err instanceof Error ? err.message : String(err);
   const errAny = err as { name?: string; status?: number; error?: { type?: string } };
+  const inferredStatus = typeof errAny.status === 'number'
+    ? errAny.status
+    : /(?:status(?:\s+code)?|http)\s*[:=]?\s*403\b/i.test(message)
+      ? 403
+      : undefined;
 
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
@@ -49,14 +54,14 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
 
   // Anthropic auth failures.
   if (
-    errAny.status === 401 ||
-    errAny.status === 403 ||
+    inferredStatus === 401 ||
+    inferredStatus === 403 ||
     message.includes('Invalid API key') ||
     message.includes('API_KEY_INVALID') ||
     message.includes('API key expired') ||
     message.includes('API key not valid')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'auth_invalid', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'auth_invalid', cause: err, status: inferredStatus });
   }
 
   // SDK-level overloaded — Anthropic emits OverloadedError or 529 with type:'overloaded_error'.
@@ -70,7 +75,7 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
 
   // Rate limit.
   if (errAny.status === 429) {
-    return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err, status: errAny.status });
   }
 
   // Quota.

@@ -1,8 +1,8 @@
 -- claude-mem SQLite schema
 --
 -- Authoritative shape of the database after all migrations through
--- runner.ts have been applied (current runner tip = migration 31;
--- SessionStore boot repair records migration 32). Fresh
+-- runner.ts have been applied (current runner tip = migration 33).
+-- SessionStore boot repair also records migrations 32 and 33. Fresh
 -- databases boot directly into this shape; existing databases reach
 -- it via the migration runner.
 --
@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS pending_messages (
   prompt_number            INTEGER,
   status                   TEXT    NOT NULL DEFAULT 'pending'
                                    CHECK(status IN ('pending', 'processing')),
+  last_failure_code        TEXT,
+  last_failure_at          INTEGER,
   created_at_epoch         INTEGER NOT NULL,
   agent_type               TEXT,
   agent_id                 TEXT,

@@ -34,6 +34,7 @@ export class MigrationRunner {
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
     this.dropDeadPendingMessagesColumns();
+    this.addPendingFailureColumns();
   }
 
   private initializeSchema(): void {
@@ -1001,5 +1002,22 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
+  }
+
+  private addPendingFailureColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const columnNames = new Set(columns.map(column => column.name));
+
+    if (!columnNames.has('last_failure_code')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN last_failure_code TEXT');
+    }
+    if (!columnNames.has('last_failure_at')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN last_failure_at INTEGER');
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
   }
 }

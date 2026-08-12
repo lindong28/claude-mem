@@ -14,6 +14,8 @@ export interface PersistentPendingMessage {
   last_assistant_message: string | null;
   prompt_number: number | null;
   status: 'pending' | 'processing';
+  last_failure_code: string | null;
+  last_failure_at: number | null;
   created_at_epoch: number;
   agent_type: string | null;
   agent_id: string | null;
@@ -67,7 +69,9 @@ export class PendingMessageStore {
          SET status = 'processing'
        WHERE id = (
          SELECT id FROM pending_messages
-          WHERE session_db_id = ? AND status = 'pending'
+          WHERE session_db_id = ?
+            AND status = 'pending'
+            AND last_failure_code IS NULL
           ORDER BY id ASC
           LIMIT 1
        )
@@ -83,17 +87,37 @@ export class PendingMessageStore {
     return claimed;
   }
 
-  clearPendingForSession(sessionDbId: number): number {
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages WHERE session_db_id = ?
-    `);
-    const changes = stmt.run(sessionDbId).changes;
-    if (changes > 0) {
-      logger.info('QUEUE', `CLEARED | sessionDbId=${sessionDbId} | rowsDeleted=${changes}`, {
-        sessionId: sessionDbId
-      });
-      this.onMutate?.();
-    }
+  failClaimedBatch(messageIds: readonly number[], failureCode: string, failedAt: number = Date.now()): number {
+    const uniqueIds = [...new Set(messageIds)];
+    if (uniqueIds.length === 0) return 0;
+    if (!failureCode) throw new Error('failClaimedBatch requires a stable failure code');
+
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const failTx = this.db.transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE pending_messages
+           SET status = 'pending',
+               last_failure_code = ?,
+               last_failure_at = ?
+         WHERE id IN (${placeholders})
+           AND status = 'processing'
+           AND last_failure_code IS NULL
+      `).run(failureCode, failedAt, ...uniqueIds);
+
+      if (result.changes !== uniqueIds.length) {
+        throw new Error(
+          `failClaimedBatch: expected ${uniqueIds.length} processing rows, updated ${result.changes}`
+        );
+      }
+      return result.changes;
+    });
+
+    const changes = failTx();
+    logger.warn('QUEUE', `FAILED_BATCH | rows=${changes} | code=${failureCode}`, {
+      messageIds: uniqueIds,
+      failureCode
+    });
+    this.onMutate?.();
     return changes;
   }
 
@@ -101,7 +125,9 @@ export class PendingMessageStore {
     const stmt = this.db.prepare(`
       UPDATE pending_messages
          SET status = 'pending'
-       WHERE session_db_id = ? AND status = 'processing'
+       WHERE session_db_id = ?
+         AND status = 'processing'
+         AND last_failure_code IS NULL
     `);
     const changes = stmt.run(sessionDbId).changes;
     if (changes > 0) {
@@ -116,7 +142,9 @@ export class PendingMessageStore {
   getPendingCount(sessionDbId: number): number {
     const stmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
-      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+      WHERE session_db_id = ?
+        AND status IN ('pending', 'processing')
+        AND last_failure_code IS NULL
     `);
     const result = stmt.get(sessionDbId) as { count: number };
     return result.count;
@@ -125,7 +153,9 @@ export class PendingMessageStore {
   peekPendingTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
     const stmt = this.db.prepare(`
       SELECT message_type, tool_name FROM pending_messages
-      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+      WHERE session_db_id = ?
+        AND status IN ('pending', 'processing')
+        AND last_failure_code IS NULL
       ORDER BY id ASC
     `);
     return stmt.all(sessionDbId) as Array<{ message_type: string; tool_name: string | null }>;

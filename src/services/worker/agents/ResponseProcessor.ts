@@ -33,15 +33,13 @@ export async function processAgentResponse(
   }
 
   const parsed = parseAgentXml(text, session.contentSessionId);
+  const coveredMessageIds = sessionManager.getClaimedMessageIds(session.sessionDbId);
 
   if (!parsed.valid) {
-    logger.warn('PARSER', `${agentName} returned non-XML/empty response — ignoring queued batch`, {
+    logger.warn('PARSER', `${agentName} returned non-XML/empty response — preserving queued batch`, {
       sessionId: session.sessionDbId,
     });
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried
-    // until the restart guard fires or the provider quota is exhausted.
-    sessionManager.clearPendingForSession(session.sessionDbId);
+    sessionManager.failClaimedBatch(session.sessionDbId, 'INVALID_RESPONSE', coveredMessageIds);
     session.earliestPendingTimestamp = null;
     return;
   }
@@ -50,10 +48,8 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
-    // Reset any claimed-but-undelivered messages back to pending so they don't
-    // count as "in progress" and trigger a respawn loop while we wait for the
-    // memory session id to appear. The next generator pass will re-claim them.
-    sessionManager.getPendingMessageStore().resetProcessingToPending(session.sessionDbId);
+    sessionManager.failClaimedBatch(session.sessionDbId, 'MISSING_MEMORY_SESSION', coveredMessageIds);
+    session.earliestPendingTimestamp = null;
     return;
   }
 
@@ -61,13 +57,6 @@ export async function processAgentResponse(
   const summaryForStore = normalizeSummaryForStorage(summary);
 
   const sessionStore = dbManager.getSessionStore();
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
-
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
-    sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
-  });
-
   const labeledObservations = observations.map(obs => ({
     ...obs,
     agent_type: session.pendingAgentType ?? null,
@@ -76,16 +65,40 @@ export async function processAgentResponse(
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
-    result = sessionStore.storeObservations(
-      session.memorySessionId,
-      session.project,
-      labeledObservations,
-      summaryForStore,
-      session.lastPromptNumber,
-      discoveryTokens,
-      originalTimestamp ?? undefined,
-      modelId
-    );
+    sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+
+    logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+
+    result = coveredMessageIds.length > 0
+      ? sessionStore.storeObservationsAndMarkComplete(
+          session.memorySessionId,
+          session.project,
+          labeledObservations,
+          summaryForStore,
+          coveredMessageIds,
+          sessionManager.getPendingMessageStore(),
+          session.lastPromptNumber,
+          discoveryTokens,
+          originalTimestamp ?? undefined,
+          modelId
+        )
+      : sessionStore.storeObservations(
+          session.memorySessionId,
+          session.project,
+          labeledObservations,
+          summaryForStore,
+          session.lastPromptNumber,
+          discoveryTokens,
+          originalTimestamp ?? undefined,
+          modelId
+        );
+  } catch (error) {
+    sessionManager.failClaimedBatch(session.sessionDbId, 'STORE_FAILED', coveredMessageIds);
+    session.earliestPendingTimestamp = null;
+    throw error;
   } finally {
     session.pendingAgentId = null;
     session.pendingAgentType = null;
@@ -108,7 +121,7 @@ export async function processAgentResponse(
     });
   }
 
-  sessionManager.clearPendingForSession(session.sessionDbId);
+  sessionManager.releaseClaimedMessageIds(session.sessionDbId, coveredMessageIds);
   session.earliestPendingTimestamp = null;
   session.restartGuard?.recordSuccess();
 

@@ -67,15 +67,17 @@ Stop -> summarize -> /api/sessions/summarize
 ### Pending Queue (PendingMessageStore)
 
 ```text
-enqueue()                    -> INSERT row with `pending` status
-clearPendingForSession()     -> DELETE all pending rows for session
-                                (called whenever the parser returns
-                                a parseable response, regardless of
-                                whether observations were extracted)
+enqueue()                -> INSERT row with `pending` status
+claimNextMessage()       -> claim the oldest `pending` row with no failure code
+successful response      -> store observations and delete only the claimed row IDs
+failed response/exit     -> restore only the claimed row IDs to `pending` and record
+                            `last_failure_code` plus `last_failure_at`
 ```
 
 Parser is binary: `{ valid: true, observations, summary }` or `{ valid: false }`.
-Unparseable responses leave the queue untouched and the session iterator continues.
+Observation storage and deletion of the covered queue rows share one transaction.
+Failure-coded rows remain durable but are excluded from normal claims; unclaimed
+rows in the same session remain eligible.
 
 ### Generator restart loop (SessionRoutes)
 
@@ -84,9 +86,9 @@ Generator crash -> retry 1 (1s) -> retry 2 (2s) -> retry 3 (4s)
   -> consecutiveRestarts > 3 -> stop and let the iterator end
 ```
 
-Counter resets to 0 when generator completes work naturally. Pending
-messages remain in the queue across restarts and are cleared by the
-parser path on the next valid response.
+Counter resets to 0 when generator completes work naturally. A terminal
+provider, parser, storage, or restart failure codes only the claimed batch;
+newer eligible rows in the same session can still make forward progress.
 
 ### Graceful Degradation (hook-command.ts)
 

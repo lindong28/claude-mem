@@ -15,7 +15,7 @@ import {
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
-import { ClassifiedProviderError } from './provider-errors.js';
+import { ClassifiedProviderError, providerFailureCode } from './provider-errors.js';
 import { withRetry } from './retry.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
@@ -57,46 +57,53 @@ export function classifyGeminiError(input: {
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
 
-  // Quota exceeded — by body marker — even on 500 (Gemini quirk).
+  if (status === 403) {
+    return new ClassifiedProviderError(
+      'Gemini auth error (status 403)',
+      { kind: 'auth_invalid', cause: input.cause, status },
+    );
+  }
+
+  // After explicit 403 handling, quota body markers classify other statuses (including Gemini's 500 quirk).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause: input.cause, ...(status !== undefined ? { status } : {}) },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
       'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}), ...(status !== undefined ? { status } : {}) },
     );
   }
 
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     // API_KEY_INVALID, PERMISSION_DENIED, etc.
     if (lower.includes('api key not valid') || lower.includes('api_key_invalid') || lower.includes('api key expired')) {
       return new ClassifiedProviderError(
         `Gemini auth invalid (status ${status})`,
-        { kind: 'auth_invalid', cause: input.cause },
+        { kind: 'auth_invalid', cause: input.cause, status },
       );
     }
     return new ClassifiedProviderError(
       `Gemini auth error (status ${status})`,
-      { kind: 'auth_invalid', cause: input.cause },
+      { kind: 'auth_invalid', cause: input.cause, status },
     );
   }
 
   if (status === 400) {
     return new ClassifiedProviderError(
       `Gemini bad request (status 400)`,
-      { kind: 'unrecoverable', cause: input.cause },
+      { kind: 'unrecoverable', cause: input.cause, status },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
       `Gemini upstream error (status ${status})`,
-      { kind: 'transient', cause: input.cause },
+      { kind: 'transient', cause: input.cause, status },
     );
   }
 
@@ -110,7 +117,7 @@ export function classifyGeminiError(input: {
 
   return new ClassifiedProviderError(
     `Gemini API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    { kind: 'unrecoverable', cause: input.cause, ...(status !== undefined ? { status } : {}) },
   );
 }
 
@@ -316,9 +323,7 @@ export class GeminiProvider {
     if (obsResponse.content) {
       await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini observation response, leaving queue intact', {
-        sessionId: session.sessionDbId
-      });
+      await processAgentResponse('', session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     }
   }
 
@@ -359,9 +364,7 @@ export class GeminiProvider {
     if (summaryResponse.content) {
       await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     } else {
-      logger.warn('SDK', 'Empty Gemini summary response, leaving queue intact', {
-        sessionId: session.sessionDbId
-      });
+      await processAgentResponse('', session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
     }
   }
 
@@ -371,6 +374,7 @@ export class GeminiProvider {
       throw error;
     }
 
+    this.sessionManager.failClaimedBatch(session.sessionDbId, providerFailureCode(error));
     logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }

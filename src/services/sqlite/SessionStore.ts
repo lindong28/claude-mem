@@ -71,6 +71,24 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.ensurePendingFailureColumns();
+  }
+
+  private ensurePendingFailureColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const columnNames = new Set(columns.map(column => column.name));
+
+    if (!columnNames.has('last_failure_code')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN last_failure_code TEXT');
+    }
+    if (!columnNames.has('last_failure_at')) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN last_failure_at INTEGER');
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
   }
 
   private dropWorkerPidColumn(): void {
@@ -523,6 +541,8 @@ export class SessionStore {
         last_assistant_message TEXT,
         prompt_number INTEGER,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
+        last_failure_code TEXT,
+        last_failure_at INTEGER,
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
       )
@@ -1991,13 +2011,13 @@ export class SessionStore {
       next_steps: string;
       notes: string | null;
     } | null,
-    messageId: number,
+    messageIds: readonly number[],
     _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
+  ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
@@ -2054,7 +2074,7 @@ export class SessionStore {
         observationIds.push(existing.id);
       }
 
-      let summaryId: number | undefined;
+      let summaryId: number | null = null;
       if (summary) {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
@@ -2080,14 +2100,24 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
+      const uniqueMessageIds = [...new Set(messageIds)];
+      if (uniqueMessageIds.length === 0) {
+        throw new Error('storeObservationsAndMarkComplete: no covered pending messages');
+      }
+
       // Current queue rows are live work only; completed work is removed, not retained as processed.
+      const placeholders = uniqueMessageIds.map(() => '?').join(', ');
       const deleteStmt = this.db.prepare(`
         DELETE FROM pending_messages
-        WHERE id = ? AND status = 'processing'
+        WHERE id IN (${placeholders})
+          AND status = 'processing'
+          AND last_failure_code IS NULL
       `);
-      const deleteResult = deleteStmt.run(messageId);
-      if (deleteResult.changes !== 1) {
-        throw new Error(`storeObservationsAndMarkComplete: failed to complete pending message ${messageId}`);
+      const deleteResult = deleteStmt.run(...uniqueMessageIds);
+      if (deleteResult.changes !== uniqueMessageIds.length) {
+        throw new Error(
+          `storeObservationsAndMarkComplete: expected ${uniqueMessageIds.length} covered rows, deleted ${deleteResult.changes}`
+        );
       }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

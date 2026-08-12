@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   ClassifiedProviderError,
   isClassified,
+  providerFailureCode,
 } from '../../src/services/worker/provider-errors.js';
 import { classifyClaudeError } from '../../src/services/worker/ClaudeProvider.js';
 import { classifyGeminiError } from '../../src/services/worker/GeminiProvider.js';
@@ -11,6 +12,16 @@ import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterPro
 // shapes / SDK errors to ClassifiedProviderError with the right kind.
 
 describe('classifyGeminiError', () => {
+  it('preserves structured 403 over quota body markers for NEW_403 dispatch', () => {
+    const err = classifyGeminiError({
+      status: 403,
+      bodyText: 'RESOURCE_EXHAUSTED: quota exceeded',
+      cause: new Error('permission denied'),
+    });
+    expect(err.status).toBe(403);
+    expect(providerFailureCode(err)).toBe('NEW_403');
+  });
+
   it('classifies 429 with no Retry-After as rate_limit with no retryAfterMs', () => {
     const headers = new Headers(); // no Retry-After
     const cause = new Error('Gemini API error: 429 - quota');
@@ -93,6 +104,16 @@ describe('classifyGeminiError', () => {
 });
 
 describe('classifyOpenRouterError', () => {
+  it('preserves structured 403 over quota body markers for NEW_403 dispatch', () => {
+    const err = classifyOpenRouterError({
+      status: 403,
+      bodyText: 'insufficient credits: quota exceeded',
+      cause: new Error('permission denied'),
+    });
+    expect(err.status).toBe(403);
+    expect(providerFailureCode(err)).toBe('NEW_403');
+  });
+
   it('classifies 429 with no Retry-After as rate_limit with no retryAfterMs', () => {
     const headers = new Headers(); // no Retry-After
     const err = classifyOpenRouterError({
@@ -161,6 +182,21 @@ describe('classifyOpenRouterError', () => {
 });
 
 describe('classifyClaudeError', () => {
+  it('classifies common raw 403 SDK messages for NEW_403 dispatch', () => {
+    for (const message of ['Request failed with status code 403', 'HTTP 403 Forbidden']) {
+      const err = classifyClaudeError(new Error(message));
+      expect(err.status).toBe(403);
+      expect(providerFailureCode(err)).toBe('NEW_403');
+    }
+  });
+
+  it('prefers Claude structured status over conflicting raw message text', () => {
+    const err = classifyClaudeError(Object.assign(new Error('HTTP 403 Forbidden'), { status: 429 }));
+    expect(err.kind).toBe('rate_limit');
+    expect(err.status).toBe(429);
+    expect(providerFailureCode(err)).toBe('PROVIDER_RATE_LIMIT');
+  });
+
   it('classifies SDK-level OverloadedError as transient', () => {
     class OverloadedError extends Error {
       constructor() {

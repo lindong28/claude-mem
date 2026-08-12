@@ -62,7 +62,7 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
-import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
+import { ClassifiedProviderError, isClassified, providerFailureCode, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -338,6 +338,7 @@ export class WorkerService implements WorkerRef {
         UPDATE pending_messages
            SET status = 'pending'
          WHERE status = 'processing'
+           AND last_failure_code IS NULL
       `).run();
 
       if (sweepResult.changes > 0) {
@@ -566,6 +567,10 @@ export class WorkerService implements WorkerRef {
           : (classified ? classified.kind : null);
 
         if (dispatchKind === 'unrecoverable' || dispatchKind === 'auth_invalid' || dispatchKind === 'quota_exhausted') {
+          this.sessionManager.failClaimedBatch(
+            session.sessionDbId,
+            isFkConstraintFailure ? 'STORE_FAILED' : providerFailureCode(classified ?? error)
+          );
           hadUnrecoverableError = true;
           this.lastAiInteraction = {
             timestamp: Date.now(),
@@ -611,6 +616,10 @@ export class WorkerService implements WorkerRef {
           project: session.project,
           provider: providerName
         }, error as Error);
+        this.sessionManager.failClaimedBatch(
+          session.sessionDbId,
+          providerFailureCode(classified ?? error)
+        );
         sessionFailed = true;
         this.lastAiInteraction = {
           timestamp: Date.now(),

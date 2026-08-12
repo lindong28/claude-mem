@@ -7,7 +7,7 @@ import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import { ClaudeProvider } from '../../ClaudeProvider.js';
+import { ClaudeProvider, classifyClaudeError } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
@@ -21,6 +21,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { providerFailureCode } from '../../provider-errors.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -135,6 +136,8 @@ export class SessionRoutes extends BaseRouteHandler {
             provider,
             error: errorMsg
           });
+          this.sessionManager.failClaimedBatch(session.sessionDbId, 'EXTERNAL_SIGTERM');
+          session.abortReason = 'external-sigterm';
           myController.abort();
           return;
         }
@@ -145,21 +148,10 @@ export class SessionRoutes extends BaseRouteHandler {
           error: errorMsg
         }, error);
 
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        try {
-          const reset = pendingStore.resetProcessingToPending(session.sessionDbId);
-          if (reset > 0) {
-            logger.warn('SESSION', `Reset processing messages after generator error`, {
-              sessionId: session.sessionDbId,
-              reset
-            });
-          }
-        } catch (dbError) {
-          const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to reset processing messages after generator error', {
-            sessionId: session.sessionDbId
-          }, normalizedDbError);
-        }
+        const failure = provider === 'claude' ? classifyClaudeError(error) : error;
+        this.sessionManager.failClaimedBatch(session.sessionDbId, providerFailureCode(failure));
+        session.abortReason = 'provider-failure';
+        myController.abort();
       })
       .finally(async () => {
         const reason = session.abortReason ?? null;

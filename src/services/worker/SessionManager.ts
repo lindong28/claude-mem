@@ -140,7 +140,8 @@ export class SessionManager {
       restartGuard: new RestartGuard(),
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null  
+      pendingAgentType: null,
+      claimedPendingMessageIds: []
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -256,9 +257,28 @@ export class SessionManager {
     emitter?.emit('message');
   }
 
-  clearPendingForSession(sessionDbId: number): void {
-    this.getPendingStore().clearPendingForSession(sessionDbId);
+  getClaimedMessageIds(sessionDbId: number): number[] {
+    return [...(this.sessions.get(sessionDbId)?.claimedPendingMessageIds ?? [])];
+  }
+
+  releaseClaimedMessageIds(sessionDbId: number, messageIds: readonly number[]): void {
+    const session = this.sessions.get(sessionDbId);
+    if (!session || messageIds.length === 0) return;
+    const released = new Set(messageIds);
+    session.claimedPendingMessageIds = session.claimedPendingMessageIds.filter(id => !released.has(id));
+  }
+
+  failClaimedBatch(
+    sessionDbId: number,
+    failureCode: string,
+    messageIds: readonly number[] = this.getClaimedMessageIds(sessionDbId),
+    failedAt: number = Date.now()
+  ): number {
+    if (messageIds.length === 0) return 0;
+    const changes = this.getPendingStore().failClaimedBatch(messageIds, failureCode, failedAt);
+    this.releaseClaimedMessageIds(sessionDbId, messageIds);
     this.sessionQueues.get(sessionDbId)?.emit('message');
+    return changes;
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {
@@ -366,6 +386,7 @@ export class SessionManager {
     const stmt = this.dbManager.getSessionStore().db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
       WHERE status IN ('pending', 'processing')
+        AND last_failure_code IS NULL
     `);
     const result = stmt.get() as { count: number };
     return result.count;
@@ -391,6 +412,7 @@ export class SessionManager {
     }
 
     this.getPendingStore().resetProcessingToPending(sessionDbId);
+    session.claimedPendingMessageIds = [];
 
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 
@@ -411,6 +433,7 @@ export class SessionManager {
       }
 
       session.lastGeneratorActivity = Date.now();
+      session.claimedPendingMessageIds.push(message._persistentId);
 
       yield message;
     }

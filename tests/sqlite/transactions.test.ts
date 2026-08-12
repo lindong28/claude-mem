@@ -209,7 +209,7 @@ describe('Transactions Module', () => {
         project,
         observations,
         summary,
-        messageId
+        [messageId]
       );
 
       expect(result.observationIds).toHaveLength(1);
@@ -243,7 +243,7 @@ describe('Transactions Module', () => {
         project,
         observations,
         summary,
-        messageId.id,
+        [messageId.id],
         1,
         0,
         fixedTimestamp
@@ -278,7 +278,7 @@ describe('Transactions Module', () => {
         project,
         observations,
         null,
-        messageId.id
+        [messageId.id]
       );
 
       expect(result.observationIds).toHaveLength(1);
@@ -295,8 +295,8 @@ describe('Transactions Module', () => {
         'test-project',
         observations,
         null,
-        99999
-      )).toThrow('storeObservationsAndMarkComplete: failed to complete pending message 99999');
+        [99999]
+      )).toThrow('storeObservationsAndMarkComplete: expected 1 covered rows, deleted 0');
 
       const count = db.prepare(`
         SELECT COUNT(*) AS count

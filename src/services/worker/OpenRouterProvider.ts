@@ -14,7 +14,7 @@ import {
   processAgentResponse,
   type WorkerRef
 } from './agents/index.js';
-import { ClassifiedProviderError } from './provider-errors.js';
+import { ClassifiedProviderError, providerFailureCode } from './provider-errors.js';
 import { withRetry } from './retry.js';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -53,7 +53,14 @@ export function classifyOpenRouterError(input: {
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
 
-  // Quota / insufficient credits — body marker takes precedence over status.
+  if (status === 403) {
+    return new ClassifiedProviderError(
+      'OpenRouter auth error (status 403)',
+      { kind: 'auth_invalid', cause: input.cause, status },
+    );
+  }
+
+  // After explicit 403 handling, quota / insufficient-credit body markers classify the remaining statuses.
   if (
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
@@ -61,35 +68,35 @@ export function classifyOpenRouterError(input: {
   ) {
     return new ClassifiedProviderError(
       `OpenRouter quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause: input.cause, ...(status !== undefined ? { status } : {}) },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
       'OpenRouter rate limit (429)',
-      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}), ...(status !== undefined ? { status } : {}) },
     );
   }
 
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return new ClassifiedProviderError(
       `OpenRouter auth error (status ${status})`,
-      { kind: 'auth_invalid', cause: input.cause },
+      { kind: 'auth_invalid', cause: input.cause, status },
     );
   }
 
   if (status === 400 || status === 404) {
     return new ClassifiedProviderError(
       `OpenRouter bad request (status ${status})`,
-      { kind: 'unrecoverable', cause: input.cause },
+      { kind: 'unrecoverable', cause: input.cause, status },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
       `OpenRouter upstream error (status ${status})`,
-      { kind: 'transient', cause: input.cause },
+      { kind: 'transient', cause: input.cause, status },
     );
   }
 
@@ -103,7 +110,7 @@ export function classifyOpenRouterError(input: {
 
   return new ClassifiedProviderError(
     `OpenRouter API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    { kind: 'unrecoverable', cause: input.cause, ...(status !== undefined ? { status } : {}) },
   );
 }
 
@@ -358,6 +365,7 @@ export class OpenRouterProvider {
       throw error;
     }
 
+    this.sessionManager.failClaimedBatch(session.sessionDbId, providerFailureCode(error));
     logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
