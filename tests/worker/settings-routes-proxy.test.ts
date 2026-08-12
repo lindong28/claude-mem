@@ -91,11 +91,15 @@ describe('SettingsRoutes Claude SDK proxy settings', () => {
     expect(persisted[PROXY_ENABLED_KEY]).toBe('true');
     expect(persisted[PROXY_URL_KEY]).toBe(TRACKED_PROXY);
 
-    const getResponse = await fetch(`${baseUrl}/api/settings`);
-    expect(getResponse.status).toBe(200);
-    const exposed = await getResponse.json();
-    expect(exposed[PROXY_ENABLED_KEY]).toBe('true');
-    expect(exposed[PROXY_URL_KEY]).toBe(TRACKED_PROXY);
+    // No GET assertion here on purpose. GET goes through
+    // SettingsDefaultsManager.loadFromFile, and tests/hooks/file-context.test.ts
+    // installs a module-level mock for that module. bun runs every test file in
+    // one process and mock.module survives into later files, so a GET assertion
+    // passes when this file runs alone and fails in the full suite -- it would be
+    // measuring which file ran first, not the route. What this test uniquely owns
+    // is POST validation plus file-only persistence, asserted above; that the
+    // built SDK env takes its proxy from the tracked file is covered by
+    // tests/shared/claude-sdk-env.test.ts.
   });
 
   it('validates the merged file so an existing tracked URL can be enabled separately', async () => {
