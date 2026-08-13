@@ -7,6 +7,18 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// CJS bundles have no `import.meta`, so any dependency reaching for
+// `import.meta.url` compiles down to `undefined` and takes the process out on
+// the first call that consumes it — `createRequire(undefined)` throws at
+// startup, before any of our code runs. Which dependencies do this changes as
+// the tree resolves, and esbuild only warns, which this build suppresses; the
+// artifact therefore looks fine until it is executed. Define it rather than
+// hoping no dep needs it. ESM targets must NOT get this: there `import.meta`
+// is real and `__filename` does not exist.
+const IMPORT_META_URL = '__claudeMemImportMetaUrl';
+const IMPORT_META_URL_BANNER =
+  `var ${IMPORT_META_URL} = require("node:url").pathToFileURL(__filename).href;`;
+
 const WORKER_SERVICE = {
   name: 'worker-service',
   source: 'src/services/worker-service.ts'
@@ -145,13 +157,15 @@ async function buildHooks() {
         'onnxruntime-node'
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        'import.meta.url': IMPORT_META_URL
       },
       banner: {
         js: [
           '#!/usr/bin/env bun',
           'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);'
+          'var __dirname = __dirname || require("node:path").dirname(__filename);',
+          IMPORT_META_URL_BANNER
         ].join('\n')
       }
     });
@@ -201,10 +215,11 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        'import.meta.url': IMPORT_META_URL
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: ['#!/usr/bin/env node', IMPORT_META_URL_BANNER].join('\n')
       }
     });
 
@@ -249,9 +264,12 @@ async function buildHooks() {
       logLevel: 'error',
       external: ['bun:sqlite', 'zod'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        'import.meta.url': IMPORT_META_URL
       },
-      // No banner needed: CJS files under Node.js have __dirname/__filename natively
+      // CJS files under Node.js have __dirname/__filename natively; this banner
+      // exists only to back the import.meta.url define above.
+      banner: { js: IMPORT_META_URL_BANNER }
     });
 
     stripHardcodedDirname(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
