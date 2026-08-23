@@ -320,6 +320,23 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
+          // 一次 API 响应会被 SDK 拆成多条 assistant 消息——实测按 requestId 归并后 84% 是
+          // (thinking, text) 两条：thinking 先到，约 3 秒后 text 才带着合法 XML 到达。
+          // thinking-only 那条的 textContent 为空，照常送进 processAgentResponse 会被
+          // parseAgentXml 判 invalid → failClaimedBatch('INVALID_RESPONSE') 钉死整批 pending，
+          // 而钉死的行此后不再被 claimNextMessage 认领（它过滤 last_failure_code IS NULL）。
+          // 实测这一条占全部 INVALID_RESPONSE 的 98.2%（15649/15938，2026-08-23 读数）。
+          // token 记账与 overflow / API-key 检测都在本守卫之上，不受影响。
+          if (!textContent.trim()) {
+            logger.debug('SDK', 'Assistant message carries no text (thinking/tool_use only) — waiting for the text message of this response', {
+              sessionId: session.sessionDbId,
+              blocks: Array.isArray(content)
+                ? content.map((c: any) => c?.type).join(',')
+                : typeof content
+            });
+            continue;
+          }
+
           await processAgentResponse(
             textContent,
             session,
